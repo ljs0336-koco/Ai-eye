@@ -14,7 +14,7 @@
 ## 🚀 빠른 시작
 
 ### 온라인 사용
-[https://your-username.github.io/medicine-reader/](https://your-username.github.io/medicine-reader/)
+----
 
 ### 로컬 실행
 ```bash
