@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>정밀 약 봉투 리더기</title>
+    <!-- Tesseract v4 -->
+    <script src='https://cdn.jsdelivr.net/npm/tesseract.js@4/dist/tesseract.min.js'></script>
+
+    <style>
+        body {
+            background-color: #000;
+            color: #FFD700;
+            margin: 0;
+            font-family: 'Pretendard', sans-serif;
+            overflow: hidden;
+        }
+
+        .cam-container {
+            position: fixed;
+            top: 0; left: 0;
+            width: 100vw; height: 100vh;
+            z-index: 1;
+        }
+
+        video {
+            width: 100%; height: 100%;
+            object-fit: cover;
+            /* 대비를 높여서 글자 경계를 뚜렷하게 */
+            filter: contrast(1.2) brightness(1.1);
+        }
+
+        #result-overlay {
+            position: fixed;
+            bottom: 0; left: 0;
+            width: 100%;
+            padding: 20px;
+            box-sizing: border-box;
+            background: rgba(0, 0, 0, 0.9);
+            border-top: 6px solid #FFD700;
+            z-index: 100;
+            text-align: center;
+        }
+
+        #detected-text {
+            font-size: 3rem;
+            font-weight: 900;
+            color: #FFD700;
+            margin-bottom: 5px;
+        }
+
+        #debug-msg {
+            font-size: 1rem;
+            color: #666; /* 인식된 실제 텍스트를 작게 보여줌 */
+            margin-bottom: 10px;
+            height: 1.2rem;
+            overflow: hidden;
+        }
+
+        #start-screen {
+            position: fixed; top: 0; left: 0;
+            width: 100%; height: 100%;
+            background: #000;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            cursor: pointer;
+        }
+
+        .big-icon { font-size: 80px; margin-bottom: 20px; }
+        .btn-text { font-size: 24px; font-weight: bold; color: #FFD700; }
+        .loading-text { color: #888; margin-top: 10px; font-size: 14px;}
+
+    </style>
+</head>
+<body>
+
+    <div id="start-screen" onclick="initApp()">
+        <div class="big-icon">💊</div>
+        <div class="btn-text" id="btn-text">로딩 중...</div>
+        <div class="loading-text" id="status-log">엔진 준비 중</div>
+    </div>
+
+    <div class="cam-container">
+        <video id="video" playsinline autoplay muted></video>
+        <canvas id="proc-canvas" style="display:none;"></canvas>
+    </div>
+
+    <div id="result-overlay">
+        <div id="detected-text">대기 중</div>
+        <div id="debug-msg"></div> <!-- 오타가 어떻게 나는지 확인용 -->
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const canvas = document.getElementById('proc-canvas');
+        const ctx = canvas.getContext('2d');
+        const resultDiv = document.getElementById('detected-text');
+        const debugDiv = document.getElementById('debug-msg');
+        const startScreen = document.getElementById('start-screen');
+        const btnText = document.getElementById('btn-text');
+        const statusLog = document.getElementById('status-log');
+
+        let worker = null;
+        let isReady = false;
+        let isProcessing = false;
+        let lastSpeakTime = 0;
+
+        // 1. Tesseract 초기화 (정밀 설정)
+        (async () => {
+            worker = await Tesseract.createWorker({
+                logger: m => {
+                    if(m.status === 'initialized tesseract') statusLog.innerText = "설정 적용 중...";
+                }
+            });
+            
+            await worker.loadLanguage('eng');
+            await worker.initialize('eng');
+            
+            // ★ 중요 수정: 숫자도 허용 (O를 0으로 인식하는 경우 대비)
+            await worker.setParameters({
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789',
+                // 페이지 분할 모드: 흩어진 텍스트(Sparse Text) 인식에 최적화 (모드 11 또는 12)
+                tessedit_pageseg_mode: '11', 
+            });
+
+            isReady = true;
+            btnText.innerText = "화면을 눌러 시작";
+            statusLog.innerText = "준비 완료";
+        })();
+
+        function initApp() {
+            if(!isReady) return;
+            startScreen.style.display = 'none';
+            speak("약 구분기를 시작합니다.");
+            startCamera();
+        }
+
+        async function startCamera() {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({
+                    video: { facingMode: 'environment' }
+                });
+                video.srcObject = stream;
+                video.onloadedmetadata = () => {
+                    video.play();
+                    requestAnimationFrame(scanLoop);
+                };
+            } catch (err) {
+                alert("카메라 오류");
+            }
+        }
+
+        async function scanLoop() {
+            if (isReady && !isProcessing) {
+                await processFrame();
+            }
+            requestAnimationFrame(scanLoop); // 쉼 없이 계속 감시
+        }
+
+        async function processFrame() {
+            isProcessing = true;
+            try {
+                // 이미지 크기를 너무 줄이면 작은 글씨(COLD)가 뭉개짐. 
+                // 가로 800px 정도로 살짝 키움.
+                const scale = 800 / video.videoWidth; 
+                canvas.width = 800;
+                canvas.height = video.videoHeight * scale;
+
+                // 흑백 + 대비 극대화 (글자 선명하게)
+                ctx.filter = 'grayscale(100%) contrast(200%)'; 
+                ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+                ctx.filter = 'none';
+
+                const { data: { text } } = await worker.recognize(canvas);
+                
+                // 특수문자/공백 제거 후 대문자
+                const cleanText = text.toUpperCase().replace(/[^A-Z0-9]/g, '');
+                
+                // 디버깅용 (실제로 어떻게 읽고 있는지 화면에 표시)
+                if(cleanText.length > 0) debugDiv.innerText = "인식됨: " + cleanText.substring(0, 20) + "...";
+
+                smartMatch(cleanText);
+
+            } catch (e) {
+                console.error(e);
+            } finally {
+                isProcessing = false;
+            }
+        }
+
+        // ★ 핵심 알고리즘: 오타가 나도 알아듣는 '스마트 매칭'
+        function smartMatch(text) {
+            const now = Date.now();
+            if (now - lastSpeakTime < 2500) return;
+
+            let name = "";
+            let msg = "";
+
+            // 정규표현식(Regex)을 사용한 유연한 검사
+            
+            // 1. COLD (감기약)
+            // C 다음에 O 또는 0(숫자) 또는 D,Q가 오고, L 또는 1,I가 오고 D가 오는 패턴
+            // 예: COLD, C0LD, CQ1D, CO1D 등
+            const coldRegex = /C[O0DQ][L1I]D/; 
+            
+            // 2. ASPIRIN (두통약) - 이미 잘 되지만 안전장치
+            const aspirinRegex = /ASP[1I]R/;
+
+            // 3. TYLENOL
+            const tylenolRegex = /TYL/;
+
+            // 4. VITAMIN
+            const vitaRegex = /V[1I]TA/;
+
+            if (coldRegex.test(text)) {
+                name = "감기약";
+                msg = "감기약입니다.";
+            } 
+            else if (aspirinRegex.test(text)) {
+                name = "두통약";
+                msg = "두통약입니다.";
+            }
+            else if (tylenolRegex.test(text)) {
+                name = "진통제";
+                msg = "타이레놀입니다.";
+            }
+            else if (vitaRegex.test(text)) {
+                name = "비타민";
+                msg = "비타민입니다.";
+            }
+
+            if (name) {
+                resultDiv.innerText = name;
+                resultDiv.style.color = "#00FF00"; // 찾으면 초록색
+                
+                if (navigator.vibrate) navigator.vibrate(200);
+                speak(msg);
+                
+                lastSpeakTime = now;
+                
+                // 1초 뒤에 색상 원복
+                setTimeout(() => resultDiv.style.color = "#FFD700", 1000);
+            }
+        }
+
+        function speak(msg) {
+            window.speechSynthesis.cancel();
+            const u = new SpeechSynthesisUtterance(msg);
+            u.lang = 'ko-KR';
+            window.speechSynthesis.speak(u);
+        }
+    </script>
+</body>
+</html>
