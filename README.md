@@ -14,7 +14,7 @@
 ## 🚀 빠른 시작
 
 ### 온라인 사용
-[----](https://ljs0336-koco.github.io/Ai-eye/)
+[앱 실행하기](https://ljs0336-koco.github.io/Ai-eye/)
 
 ### 로컬 실행
 ```bash
