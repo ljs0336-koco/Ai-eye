@@ -60,7 +60,7 @@ const scale = 800 / video.videoWidth;
 ctx.filter = 'grayscale(100%) contrast(200%)';
 ```
 
-## ⚠️ 알려진 제한사항
+## ⚠️ 제한사항
 
 - **손글씨 미지원**: 인쇄된 텍스트만 인식
 - **조명 민감**: 어두운 환경에서 인식률 저하
